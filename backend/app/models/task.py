@@ -1,6 +1,7 @@
 """Task model."""
 from sqlalchemy import Column, String, Text, DateTime, Enum as SQLEnum
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 import uuid
 import enum
 from app.core.db import Base
@@ -12,6 +13,7 @@ class TaskStatus(str, enum.Enum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class Task(Base):
@@ -45,6 +47,10 @@ class Task(Base):
         nullable=False
     )
     result_summary = Column(Text, nullable=True)  # Summary of results
+    
+    # Relationships
+    event_logs = relationship("EventLog", back_populates="task", cascade="all, delete-orphan")
+    agent_runs = relationship("AgentRun", back_populates="task", cascade="all, delete-orphan")
     
     def __repr__(self):
         return (

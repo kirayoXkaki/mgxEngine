@@ -1,8 +1,9 @@
 """Pydantic schemas for Task API."""
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from app.models.task import TaskStatus
+from app.core.metagpt_types import TaskState, Event, EventType
 
 
 class TaskCreate(BaseModel):
@@ -72,4 +73,60 @@ class TaskListResponse(BaseModel):
             }
         }
     }
+
+
+class TaskStateResponse(BaseModel):
+    """Schema for task state response."""
+    task_id: str
+    status: str
+    progress: float
+    current_agent: Optional[str] = None
+    last_message: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    final_result: Optional[Dict[str, Any]] = None
+    
+    @classmethod
+    def from_task_state(cls, state: TaskState) -> "TaskStateResponse":
+        """Create from TaskState dataclass."""
+        return cls(
+            task_id=state.task_id,
+            status=state.status,
+            progress=state.progress,
+            current_agent=state.current_agent,
+            last_message=state.last_message,
+            started_at=state.started_at,
+            completed_at=state.completed_at,
+            error_message=state.error_message,
+            final_result=state.final_result
+        )
+
+
+class EventResponse(BaseModel):
+    """Schema for event response."""
+    event_id: int
+    task_id: str
+    timestamp: datetime
+    agent_role: Optional[str] = None
+    event_type: str
+    payload: Dict[str, Any]
+    
+    @classmethod
+    def from_event(cls, event: Event) -> "EventResponse":
+        """Create from Event dataclass."""
+        return cls(
+            event_id=event.event_id,
+            task_id=event.task_id,
+            timestamp=event.timestamp,
+            agent_role=event.agent_role,
+            event_type=event.event_type.value,
+            payload=event.payload
+        )
+
+
+class EventListResponse(BaseModel):
+    """Schema for event list response."""
+    events: List[EventResponse]
+    total: int
 

@@ -3,10 +3,17 @@ uvicorn[standard]==0.24.0
 sqlalchemy>=2.0.36
 pydantic>=2.8.0
 pydantic-settings>=2.1.0
-# psycopg2-binary is optional - only needed for PostgreSQL
-# For Python 3.13, use psycopg (version 3) instead if needed:
-# psycopg[binary]>=3.1.0
 python-dotenv==1.0.0
+
+# PostgreSQL drivers (for Supabase)
+# asyncpg is recommended for async operations with Supabase
+asyncpg>=0.29.0
+# psycopg2-binary is an alternative (synchronous)
+# For Python 3.13, use psycopg (version 3) instead:
+# psycopg[binary]>=3.1.0
+
+# MetaGPT (optional - install when needed)
+# metagpt>=0.8.0
 
 # Testing
 pytest==7.4.3
