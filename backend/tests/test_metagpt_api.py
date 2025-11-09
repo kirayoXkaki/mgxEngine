@@ -82,7 +82,7 @@ class TestGetTaskStateEndpoint:
         task_id = create_response.json()["id"]
         
         client.post(f"/api/tasks/{task_id}/run")
-        time.sleep(0.5)  # Wait for state to be created
+        time.sleep(0.15)  # Reduced from 0.5  # Wait for state to be created
         
         # Get state
         response = client.get(f"/api/tasks/{task_id}/state")
@@ -108,7 +108,7 @@ class TestGetTaskStateEndpoint:
         task_id = create_response.json()["id"]
         
         client.post(f"/api/tasks/{task_id}/run")
-        time.sleep(0.5)
+        time.sleep(0.15)  # Reduced from 0.5
         
         response = client.get(f"/api/tasks/{task_id}/state")
         data = response.json()
@@ -253,7 +253,7 @@ class TestIntegrationFlow:
         assert run_response.status_code == 202
         
         # 3. Wait a bit
-        time.sleep(1.0)
+        time.sleep(0.5)  # Reduced from 1.0
         
         # 4. Check state
         state_response = client.get(f"/api/tasks/{task_id}/state")

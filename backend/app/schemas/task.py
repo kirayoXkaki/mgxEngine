@@ -164,3 +164,111 @@ class EventListResponse(BaseModel):
     events: List[EventResponse]
     total: int
 
+
+class TimelineItem(BaseModel):
+    """Schema for timeline item in chat-like format."""
+    event_id: int
+    timestamp: datetime
+    agent_role: Optional[str] = None
+    visual_type: Optional[str] = None
+    message: Optional[str] = None
+    content: Optional[str] = None
+    file_path: Optional[str] = None
+    code_diff: Optional[str] = None
+    execution_result: Optional[str] = None
+    event_type: str
+    # Grouping metadata
+    group_key: Optional[str] = Field(None, description="Key for grouping: {agent_role}_{visual_type}")
+    
+    @classmethod
+    def from_event_log(cls, event_log) -> "TimelineItem":
+        """Create from EventLog ORM model."""
+        import json
+        try:
+            payload = json.loads(event_log.content) if event_log.content else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {"content": event_log.content} if event_log.content else {}
+        
+        # Extract message from payload
+        message = payload.get("message") or payload.get("content")
+        
+        # Create group key for grouping
+        agent_role = event_log.agent_role or "SYSTEM"
+        visual_type = event_log.visual_type.value if event_log.visual_type else "MESSAGE"
+        group_key = f"{agent_role}_{visual_type}"
+        
+        return cls(
+            event_id=event_log.id,
+            timestamp=event_log.created_at,
+            agent_role=event_log.agent_role,
+            visual_type=visual_type,
+            message=message,
+            content=payload.get("content") if isinstance(payload.get("content"), str) else None,
+            file_path=event_log.file_path,
+            code_diff=event_log.code_diff,
+            execution_result=event_log.execution_result,
+            event_type=event_log.event_type.value,
+            group_key=group_key
+        )
+
+
+class TimelineResponse(BaseModel):
+    """Schema for timeline response with pagination."""
+    items: List[TimelineItem]
+    total: int
+    limit: int
+    offset: int
+    has_more: bool = Field(False, description="Whether there are more items beyond this page")
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "items": [],
+                "total": 0,
+                "limit": 50,
+                "offset": 0,
+                "has_more": False
+            }
+        }
+    }
+
+
+class EditRequest(BaseModel):
+    """Schema for code editing request."""
+    file_path: str = Field(..., description="Path to the file to edit (relative to project root)")
+    instruction: str = Field(..., min_length=1, description="Natural language instruction for code modification")
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "file_path": "src/main.py",
+                "instruction": "Add error handling for division by zero"
+            }
+        }
+    }
+
+
+class EditResponse(BaseModel):
+    """Schema for code editing response."""
+    success: bool
+    message: str
+    file_path: str
+    old_version: int
+    new_version: int
+    diff: Optional[str] = Field(None, description="Unified diff between old and new code")
+    artifact_id: Optional[str] = Field(None, description="ID of the new artifact version")
+    
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "success": True,
+                "message": "Code edited successfully",
+                "file_path": "src/main.py",
+                "old_version": 1,
+                "new_version": 2,
+                "diff": "@@ -1,3 +1,5 @@\n...",
+                "artifact_id": "550e8400-e29b-41d4-a716-446655440000"
+            }
+        }
+    }
+

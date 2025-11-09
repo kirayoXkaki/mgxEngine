@@ -46,6 +46,23 @@ def persist_event(
         if hasattr(EventType, 'SYSTEM'):
             db_event_type_map[EventType.SYSTEM] = DBEventType.SYSTEM
         
+        # Handle EXECUTION_STREAM type if it exists in EventType
+        if hasattr(EventType, 'EXECUTION_STREAM'):
+            if hasattr(DBEventType, 'EXECUTION_STREAM'):
+                db_event_type_map[EventType.EXECUTION_STREAM] = DBEventType.EXECUTION_STREAM
+            else:
+                # Fallback to MESSAGE if EXECUTION_STREAM not in DB enum
+                db_event_type_map[EventType.EXECUTION_STREAM] = DBEventType.MESSAGE
+        
+        # Handle TASK_START, TASK_COMPLETE, TASK_ERROR types
+        for task_event_type in ['TASK_START', 'TASK_COMPLETE', 'TASK_ERROR']:
+            if hasattr(EventType, task_event_type):
+                if hasattr(DBEventType, task_event_type):
+                    db_event_type_map[getattr(EventType, task_event_type)] = getattr(DBEventType, task_event_type)
+                else:
+                    # Fallback to LOG for lifecycle events
+                    db_event_type_map[getattr(EventType, task_event_type)] = DBEventType.LOG
+        
         db_event_type = db_event_type_map.get(event.event_type, DBEventType.LOG)
         
         # Serialize payload to JSON string

@@ -14,6 +14,10 @@ class EventType(str, Enum):
     RESULT = "RESULT"     # Final result/output
     AGENT_START = "AGENT_START"  # Agent started working
     AGENT_COMPLETE = "AGENT_COMPLETE"  # Agent finished
+    EXECUTION_STREAM = "EXECUTION_STREAM"  # Real-time stdout/stderr stream from code execution
+    TASK_START = "TASK_START"  # Task lifecycle: task started
+    TASK_COMPLETE = "TASK_COMPLETE"  # Task lifecycle: task completed successfully
+    TASK_ERROR = "TASK_ERROR"  # Task lifecycle: task failed with error
 
 
 @dataclass

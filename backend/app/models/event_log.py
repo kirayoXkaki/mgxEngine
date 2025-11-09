@@ -72,6 +72,10 @@ class EventType(str, enum.Enum):
     AGENT_START = "AGENT_START"
     AGENT_COMPLETE = "AGENT_COMPLETE"
     SYSTEM = "SYSTEM"
+    EXECUTION_STREAM = "EXECUTION_STREAM"  # Real-time stdout/stderr stream from code execution
+    TASK_START = "TASK_START"  # Task lifecycle: task started
+    TASK_COMPLETE = "TASK_COMPLETE"  # Task lifecycle: task completed successfully
+    TASK_ERROR = "TASK_ERROR"  # Task lifecycle: task failed with error
 
 
 class VisualType(str, enum.Enum):

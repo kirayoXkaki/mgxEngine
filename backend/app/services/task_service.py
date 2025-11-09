@@ -7,6 +7,7 @@ import uuid
 
 from app.models.task import Task, TaskStatus
 from app.core.metagpt_runner import get_metagpt_runner
+from app.core.metrics import MetricsCollector
 import app.core.metagpt_runner
 
 
@@ -40,6 +41,9 @@ class TaskService:
         db.add(task)
         db.commit()
         db.refresh(task)
+        
+        # Record metrics
+        MetricsCollector.record_task_created(status="PENDING")
         
         return task
     
@@ -134,7 +138,11 @@ class TaskService:
         if title is not None:
             task.title = title
         if status is not None:
+            old_status = task.status.value if task.status else None
             task.status = status
+            # Record metrics
+            if old_status:
+                MetricsCollector.record_task_status_change(old_status, status.value)
         if result_summary is not None:
             task.result_summary = result_summary
         

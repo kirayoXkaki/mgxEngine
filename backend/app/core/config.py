@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     mgx_test_mode: bool = False  # Enable test mode (simulated workflow without MetaGPT)
     mgx_max_task_duration: int = 600  # Maximum task duration in seconds (10 minutes)
     
+    # LLM Rate Limiting
+    # Maximum concurrent LLM API calls (shared across all tasks)
+    # Can be overridden via LLM_MAX_CONCURRENCY environment variable
+    llm_max_concurrency: int = 3
+    
     # API
     api_host: str = "0.0.0.0"
     api_port: int = 8000

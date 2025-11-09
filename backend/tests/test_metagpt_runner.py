@@ -50,7 +50,7 @@ class TestMetaGPTRunner:
         runner.start_task(task_id, "Test requirement", on_event=event_callback, test_mode=True)
         
         # Wait for events
-        time.sleep(0.5)
+        time.sleep(0.2)  # Reduced from 0.5
         
         assert len(events_received) > 0
         assert any(e.event_type == EventType.LOG for e in events_received)
@@ -156,7 +156,7 @@ class TestMetaGPTRunner:
         runner.start_task(task_id, "Test requirement", test_mode=True)
         
         # Wait for progress updates
-        time.sleep(0.5)
+        time.sleep(0.2)  # Reduced from 0.5
         
         state = runner.get_task_state(task_id)
         if state:

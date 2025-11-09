@@ -1,6 +1,7 @@
 """Tests for AgentSimulator and multi-agent workflow."""
 import pytest
 import time
+import asyncio
 import uuid
 from app.core.metagpt_runner import MetaGPTRunner, AgentSimulator
 from app.core.metagpt_types import EventType
@@ -251,7 +252,8 @@ class TestAgentSimulator:
 class TestMultiAgentWorkflow:
     """Test complete multi-agent workflow orchestration."""
     
-    def test_simulate_workflow_pm_to_architect_to_engineer(self, db):
+    @pytest.mark.asyncio
+    async def test_simulate_workflow_pm_to_architect_to_engineer(self, db):
         """Test complete workflow: PM → Architect → Engineer."""
         def get_test_db():
             return db
@@ -267,16 +269,16 @@ class TestMultiAgentWorkflow:
         task_id = task.id
         
         runner = MetaGPTRunner(db_session_factory=get_test_db)
-        runner.start_task(task_id, "Create a simple calculator", test_mode=True)
+        await runner.start_task_async(task_id, "Create a simple calculator", test_mode=True)
         
-        # Wait for workflow to complete
-        max_wait = 5  # seconds
+        # Wait for workflow to complete (reduced wait time)
+        max_wait = 3  # seconds (reduced from 5)
         start_time = time.time()
         while time.time() - start_time < max_wait:
             state = runner.get_task_state(task_id)
             if state and state.status in ("SUCCEEDED", "FAILED"):
                 break
-            time.sleep(0.2)
+            await asyncio.sleep(0.1)  # Reduced from 0.2
         
         # Check final state
         state = runner.get_task_state(task_id)
@@ -299,7 +301,8 @@ class TestMultiAgentWorkflow:
         eng_events = [e for e in events if e.agent_role == "Engineer"]
         assert len(eng_events) > 0
     
-    def test_simulate_workflow_events_persisted_to_db(self, db):
+    @pytest.mark.asyncio
+    async def test_simulate_workflow_events_persisted_to_db(self, db):
         """Test that workflow events are persisted to database."""
         def get_test_db():
             return db
@@ -315,16 +318,16 @@ class TestMultiAgentWorkflow:
         task_id = task.id
         
         runner = MetaGPTRunner(db_session_factory=get_test_db)
-        runner.start_task(task_id, "Test event persistence", test_mode=True)
+        await runner.start_task_async(task_id, "Test event persistence", test_mode=True)
         
-        # Wait for workflow to complete
-        max_wait = 5
+        # Wait for workflow to complete (reduced wait time)
+        max_wait = 3  # seconds (reduced from 5)
         start_time = time.time()
         while time.time() - start_time < max_wait:
             state = runner.get_task_state(task_id)
             if state and state.status in ("SUCCEEDED", "FAILED"):
                 break
-            time.sleep(0.2)
+            await asyncio.sleep(0.1)  # Reduced from 0.2, use async sleep
         
         # Check events were persisted to database
         db_events = db.query(EventLog).filter(EventLog.task_id == task_id).all()
@@ -343,7 +346,8 @@ class TestMultiAgentWorkflow:
         assert len(code_events) > 0, "Should have CODE events"
         # Execution events may or may not exist depending on code execution success
     
-    def test_simulate_workflow_artifacts_persisted_to_db(self, db):
+    @pytest.mark.asyncio
+    async def test_simulate_workflow_artifacts_persisted_to_db(self, db):
         """Test that workflow artifacts are persisted to database."""
         def get_test_db():
             return db
@@ -359,16 +363,16 @@ class TestMultiAgentWorkflow:
         task_id = task.id
         
         runner = MetaGPTRunner(db_session_factory=get_test_db)
-        runner.start_task(task_id, "Test artifact persistence", test_mode=True)
+        await runner.start_task_async(task_id, "Test artifact persistence", test_mode=True)
         
-        # Wait for workflow to complete
-        max_wait = 5
+        # Wait for workflow to complete (reduced wait time)
+        max_wait = 3  # seconds (reduced from 5)
         start_time = time.time()
         while time.time() - start_time < max_wait:
             state = runner.get_task_state(task_id)
             if state and state.status in ("SUCCEEDED", "FAILED"):
                 break
-            time.sleep(0.2)
+            await asyncio.sleep(0.1)  # Reduced from 0.2, use async sleep
         
         # Check artifacts were persisted to database
         # Query directly instead of refresh to avoid detached instance issues
@@ -383,11 +387,28 @@ class TestMultiAgentWorkflow:
         design_artifacts = [a for a in artifacts if a.file_path == "docs/design.md"]
         assert len(design_artifacts) > 0
         
-        # Check we have code artifact
-        code_artifacts = [a for a in artifacts if a.file_path == "src/main.py"]
-        assert len(code_artifacts) > 0
+        # Check we have multiple code artifacts (Engineer now generates multiple files)
+        # Backend file
+        backend_artifacts = [a for a in artifacts if a.file_path == "backend/src/main.py"]
+        assert len(backend_artifacts) > 0, "Should have backend/src/main.py artifact"
+        
+        # Frontend file
+        frontend_artifacts = [a for a in artifacts if a.file_path == "frontend/src/App.tsx"]
+        assert len(frontend_artifacts) > 0, "Should have frontend/src/App.tsx artifact"
+        
+        # Config file
+        config_artifacts = [a for a in artifacts if a.file_path == "config/settings.py"]
+        assert len(config_artifacts) > 0, "Should have config/settings.py artifact"
+        
+        # Package.json
+        package_artifacts = [a for a in artifacts if a.file_path == "frontend/package.json"]
+        assert len(package_artifacts) > 0, "Should have frontend/package.json artifact"
+        
+        # Total should be at least 6 (PM: PRD, Architect: design, Engineer: 4 files)
+        assert len(artifacts) >= 6, f"Should have at least 6 artifacts (PM + Architect + 4 Engineer files), got {len(artifacts)}"
     
-    def test_simulate_workflow_structured_event_fields(self, db):
+    @pytest.mark.asyncio
+    async def test_simulate_workflow_structured_event_fields(self, db):
         """Test that events include all structured fields (visual_type, file_path, code_diff, execution_result)."""
         def get_test_db():
             return db
@@ -403,16 +424,16 @@ class TestMultiAgentWorkflow:
         task_id = task.id
         
         runner = MetaGPTRunner(db_session_factory=get_test_db)
-        runner.start_task(task_id, "Test structured event fields", test_mode=True)
+        await runner.start_task_async(task_id, "Test structured event fields", test_mode=True)
         
-        # Wait for workflow to complete
-        max_wait = 5
+        # Wait for workflow to complete (reduced wait time)
+        max_wait = 3  # seconds (reduced from 5)
         start_time = time.time()
         while time.time() - start_time < max_wait:
             state = runner.get_task_state(task_id)
             if state and state.status in ("SUCCEEDED", "FAILED"):
                 break
-            time.sleep(0.2)
+            await asyncio.sleep(0.1)  # Reduced from 0.2, use async sleep
         
         # Check events in database have structured fields
         db_events = db.query(EventLog).filter(EventLog.task_id == task_id).all()
