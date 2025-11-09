@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Optional, Callable
 from sqlalchemy.orm import Session
-from app.models import Task, TaskStatus, EventLog, EventType as DBEventType, AgentRun, AgentRunStatus
+from app.models import Task, TaskStatus, EventLog, EventType as DBEventType, VisualType, AgentRun, AgentRunStatus, ArtifactStore
 from app.core.metagpt_types import Event, EventType
 
 logger = logging.getLogger(__name__)
@@ -51,12 +51,32 @@ def persist_event(
         # Serialize payload to JSON string
         content = json.dumps(event.payload) if event.payload else None
         
+        # Extract visualization fields from event payload if present
+        parent_id = event.payload.get('parent_id') if isinstance(event.payload, dict) else None
+        file_path = event.payload.get('file_path') if isinstance(event.payload, dict) else None
+        code_diff = event.payload.get('code_diff') if isinstance(event.payload, dict) else None
+        execution_result = event.payload.get('execution_result') if isinstance(event.payload, dict) else None
+        visual_type_str = event.payload.get('visual_type') if isinstance(event.payload, dict) else None
+        
+        # Map visual_type string to VisualType enum
+        visual_type = None
+        if visual_type_str:
+            try:
+                visual_type = VisualType(visual_type_str.upper())
+            except (ValueError, AttributeError):
+                pass  # Invalid visual_type, leave as None
+        
         # Create EventLog entry
         event_log = EventLog(
             task_id=event.task_id,
             event_type=db_event_type,
             agent_role=event.agent_role,
-            content=content
+            content=content,
+            parent_id=str(parent_id) if parent_id is not None else None,
+            file_path=file_path,
+            code_diff=code_diff,
+            execution_result=execution_result,
+            visual_type=visual_type
         )
         
         db.add(event_log)
@@ -345,3 +365,221 @@ def update_agent_run(
                 # Session may already be closed or is a test session
                 pass
 
+
+
+def save_artifact(
+    db_session_factory: Callable[[], Session],
+    task_id: str,
+    agent_role: str,
+    file_path: str,
+    content: str,
+    version_increment: bool = False
+) -> Optional[str]:
+    """
+    Save or update an artifact (code file) with version tracking.
+    
+    Args:
+        db_session_factory: Factory function that returns a database session
+        task_id: Task identifier
+        agent_role: Agent role that created/modified this artifact
+        file_path: File path relative to project root
+        content: Full content of the code file
+        version_increment: If True, increment version from latest; if False, use version 1
+        
+    Returns:
+        Artifact ID if successful, None otherwise
+        
+    Example:
+        # Save initial version
+        artifact_id = save_artifact(
+            db_session_factory=get_db,
+            task_id="task-123",
+            agent_role="Engineer",
+            file_path="src/components/TodoList.tsx",
+            content="import React from 'react';...",
+            version_increment=False
+        )
+        
+        # Save new version (increment)
+        artifact_id_v2 = save_artifact(
+            db_session_factory=get_db,
+            task_id="task-123",
+            agent_role="Engineer",
+            file_path="src/components/TodoList.tsx",
+            content="import React, { useState } from 'react';...",
+            version_increment=True  # Will be version 2
+        )
+    """
+    db = None
+    try:
+        db = db_session_factory()
+        
+        # Determine version
+        version = 1
+        if version_increment:
+            # Get latest version for this task and file_path
+            latest = db.query(ArtifactStore).filter(
+                ArtifactStore.task_id == task_id,
+                ArtifactStore.file_path == file_path
+            ).order_by(ArtifactStore.version.desc()).first()
+            
+            if latest:
+                version = latest.version + 1
+        
+        # Generate artifact ID (UUID)
+        import uuid
+        artifact_id = str(uuid.uuid4())
+        
+        # Create artifact entry
+        artifact = ArtifactStore(
+            id=artifact_id,
+            task_id=task_id,
+            agent_role=agent_role,
+            file_path=file_path,
+            version=version,
+            content=content
+        )
+        
+        db.add(artifact)
+        db.commit()
+        db.flush()
+        
+        logger.info(
+            f"✅ Saved artifact {artifact_id} (task={task_id}, "
+            f"file={file_path}, version={version}, role={agent_role})"
+        )
+        return artifact_id
+        
+    except Exception as e:
+        logger.error(f"Error saving artifact for task {task_id}, file {file_path}: {e}", exc_info=True)
+        if db:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return None
+    finally:
+        if db:
+            try:
+                if not hasattr(db, '_test_session_reuse'):
+                    db.close()
+            except Exception:
+                pass
+
+
+def get_latest_artifact(
+    db_session_factory: Callable[[], Session],
+    task_id: str,
+    file_path: str
+) -> Optional[ArtifactStore]:
+    """
+    Get the latest version of an artifact for a given task and file path.
+    
+    Args:
+        db_session_factory: Factory function that returns a database session
+        task_id: Task identifier
+        file_path: File path relative to project root
+        
+    Returns:
+        ArtifactStore instance with the latest version, or None if not found
+        
+    Example:
+        artifact = get_latest_artifact(
+            db_session_factory=get_db,
+            task_id="task-123",
+            file_path="src/components/TodoList.tsx"
+        )
+        if artifact:
+            print(f"Latest version: {artifact.version}")
+            print(f"Content: {artifact.content}")
+    """
+    db = None
+    try:
+        db = db_session_factory()
+        
+        # Get latest version
+        artifact = db.query(ArtifactStore).filter(
+            ArtifactStore.task_id == task_id,
+            ArtifactStore.file_path == file_path
+        ).order_by(ArtifactStore.version.desc()).first()
+        
+        return artifact
+        
+    except Exception as e:
+        logger.error(f"Error getting latest artifact for task {task_id}, file {file_path}: {e}", exc_info=True)
+        return None
+    finally:
+        if db:
+            try:
+                if not hasattr(db, '_test_session_reuse'):
+                    db.close()
+            except Exception:
+                pass
+
+
+# Test snippet for verifying version increments:
+"""
+# Example test code to verify version increments:
+def test_artifact_version_increment(db):
+    from app.core.db_utils import save_artifact, get_latest_artifact
+    from app.models import Task, TaskStatus, ArtifactStore
+    import uuid
+    
+    # Create a test task
+    task = Task(
+        id=str(uuid.uuid4()),
+        input_prompt="Test",
+        status=TaskStatus.PENDING
+    )
+    db.add(task)
+    db.commit()
+    
+    def get_db():
+        return db
+    
+    # Save initial version
+    artifact_id_1 = save_artifact(
+        db_session_factory=get_db,
+        task_id=task.id,
+        agent_role="Engineer",
+        file_path="src/Test.tsx",
+        content="// Version 1",
+        version_increment=False
+    )
+    assert artifact_id_1 is not None
+    
+    # Verify version 1
+    artifact_v1 = get_latest_artifact(get_db, task.id, "src/Test.tsx")
+    assert artifact_v1 is not None
+    assert artifact_v1.version == 1
+    assert artifact_v1.content == "// Version 1"
+    
+    # Save version 2 (increment)
+    artifact_id_2 = save_artifact(
+        db_session_factory=get_db,
+        task_id=task.id,
+        agent_role="Engineer",
+        file_path="src/Test.tsx",
+        content="// Version 2",
+        version_increment=True
+    )
+    assert artifact_id_2 is not None
+    assert artifact_id_2 != artifact_id_1  # Different IDs
+    
+    # Verify version 2 is latest
+    artifact_v2 = get_latest_artifact(get_db, task.id, "src/Test.tsx")
+    assert artifact_v2 is not None
+    assert artifact_v2.version == 2
+    assert artifact_v2.content == "// Version 2"
+    
+    # Verify version 1 still exists
+    all_versions = db.query(ArtifactStore).filter(
+        ArtifactStore.task_id == task.id,
+        ArtifactStore.file_path == "src/Test.tsx"
+    ).order_by(ArtifactStore.version).all()
+    assert len(all_versions) == 2
+    assert all_versions[0].version == 1
+    assert all_versions[1].version == 2
+    
+    print("✅ Version increment test passed!")
+"""

@@ -1,7 +1,11 @@
 """MetaGPT runner abstraction layer."""
 import asyncio
 import threading
-from typing import Dict, List, Optional, Callable, Any, Set
+import subprocess
+import difflib
+import tempfile
+import os
+from typing import Dict, List, Optional, Callable, Any, Set, Tuple
 from datetime import datetime, timezone
 from collections import defaultdict
 import logging
@@ -9,6 +13,7 @@ from asyncio import Queue
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core import db_utils
+from app.models import VisualType
 
 # MetaGPT imports (assumed to be available)
 try:
@@ -32,6 +37,332 @@ from app.core.metagpt_types import TaskState, Event, EventType
 from app.models.task import TaskStatus
 
 logger = logging.getLogger(__name__)
+
+
+class AgentSimulator:
+    """
+    Simulates multi-agent workflow with structured events and artifacts.
+    
+    This class provides methods for each agent role:
+    - ProductManager: Creates PRD (plan)
+    - Architect: Creates system design (code/design docs)
+    - Engineer: Implements code and executes it
+    - Debugger: Fixes errors and re-executes
+    
+    Example chat-style flow:
+    ```
+    [ProductManager 🧠] Analyzing requirement: "Create a REST API with user authentication"
+      → run_pm(requirement)
+      → Emits: MESSAGE event (visual_type=MESSAGE, content=PRD document)
+      → Saves: docs/PRD.md (version 1)
+    
+    [Architect 🧩] Reviewing PRD and designing system...
+      → run_architect(plan)
+      → Emits: CODE event (visual_type=CODE, file_path=docs/design.md, content=design doc)
+      → Saves: docs/design.md (version 1)
+    
+    [Engineer ⚙️] Implementing code based on design...
+      → run_engineer(design)
+      → Emits: CODE event (visual_type=CODE, file_path=src/main.py, content=Python code)
+      → Executes code → Emits: EXECUTION event (visual_type=EXECUTION, execution_result=stdout)
+      → Saves: src/main.py (version 1)
+    
+    [Debugger 🔧] (if execution failed) Analyzing error and fixing...
+      → run_debugger(error, code, file_path)
+      → Emits: DIFF event (visual_type=DIFF, code_diff=unified diff patch)
+      → Executes fixed code → Emits: EXECUTION event (visual_type=EXECUTION, execution_result=stdout)
+      → Saves: src/main.py (version 2, incremented)
+    ```
+    
+    All events are automatically:
+    - Stored in memory for WebSocket streaming
+    - Persisted to EventLog table in database
+    - Include structured fields: visual_type, file_path, code_diff, execution_result
+    """
+    
+    def __init__(self, runner: 'MetaGPTRunner', task_id: str):
+        """
+        Initialize the agent simulator.
+        
+        Args:
+            runner: MetaGPTRunner instance for emitting events and saving artifacts
+            task_id: Task identifier
+        """
+        self.runner = runner
+        self.task_id = task_id
+    
+    async def run_pm(self, requirement: str) -> str:
+        """
+        ProductManager agent: Analyzes requirement and creates a plan.
+        
+        Args:
+            requirement: User requirement
+            
+        Returns:
+            Plan document (PRD)
+        """
+        plan = f"""# Product Requirements Document
+
+## Requirement
+{requirement}
+
+## Goals
+1. Understand user needs
+2. Define system scope
+3. Identify key features
+
+## Features
+- Core functionality as specified
+- Error handling
+- User-friendly interface
+
+## Success Criteria
+- All requirements met
+- Code is executable
+- Documentation complete
+"""
+        
+        # Emit MESSAGE event with plan (async)
+        await self.runner._emit_event_async(
+            self.task_id,
+            EventType.MESSAGE,
+            agent_role="ProductManager",
+            payload={
+                "message": "Created Product Requirements Document",
+                "visual_type": VisualType.MESSAGE.value,
+                "content": plan
+            }
+        )
+        
+        # Save PRD as artifact (async)
+        await self.runner._save_artifact_async(
+            task_id=self.task_id,
+            agent_role="ProductManager",
+            file_path="docs/PRD.md",
+            content=plan,
+            version_increment=False
+        )
+        
+        return plan
+    
+    async def run_architect(self, plan: str) -> str:
+        """
+        Architect agent: Creates system design based on plan.
+        
+        Args:
+            plan: PRD from ProductManager
+            
+        Returns:
+            System design document
+        """
+        design = f"""# System Design
+
+## Architecture Overview
+Based on the PRD, the system will have:
+
+## Components
+1. Main application module
+2. Utility functions
+3. Configuration management
+
+## Design Decisions
+- Modular structure
+- Clear separation of concerns
+- Error handling at each layer
+
+## API Structure
+- RESTful endpoints
+- JSON responses
+- Standard HTTP status codes
+"""
+        
+        # Emit CODE event with design (async)
+        await self.runner._emit_event_async(
+            self.task_id,
+            EventType.MESSAGE,
+            agent_role="Architect",
+            payload={
+                "message": "Created system design document",
+                "visual_type": VisualType.CODE.value,
+                "file_path": "docs/design.md",
+                "content": design
+            }
+        )
+        
+        # Save design as artifact (async)
+        await self.runner._save_artifact_async(
+            task_id=self.task_id,
+            agent_role="Architect",
+            file_path="docs/design.md",
+            content=design,
+            version_increment=False
+        )
+        
+        return design
+    
+    async def run_engineer(self, design: str) -> Tuple[str, Optional[str]]:
+        """
+        Engineer agent: Implements code based on design.
+        
+        Args:
+            design: System design from Architect
+            
+        Returns:
+            Tuple of (code, execution_result)
+            execution_result is None if code fails, otherwise contains stdout/stderr
+        """
+        # Generate code based on design
+        code = """#!/usr/bin/env python3
+\"\"\"Main application module.\"\"\"
+
+def main():
+    print("Hello, World!")
+    print("Application started successfully")
+    return 0
+
+if __name__ == "__main__":
+    exit(main())
+"""
+        
+        file_path = "src/main.py"
+        
+        # Emit CODE event (async)
+        await self.runner._emit_event_async(
+            self.task_id,
+            EventType.MESSAGE,
+            agent_role="Engineer",
+            payload={
+                "message": f"Generated code for {file_path}",
+                "visual_type": VisualType.CODE.value,
+                "file_path": file_path,
+                "content": code
+            }
+        )
+        
+        # Save code as artifact (async)
+        await self.runner._save_artifact_async(
+            task_id=self.task_id,
+            agent_role="Engineer",
+            file_path=file_path,
+            content=code,
+            version_increment=False
+        )
+        
+        # Execute code safely (async)
+        execution_result = await self.runner._execute_code_safely_async(code)
+        
+        if execution_result:
+            # Success - emit EXECUTION event (async)
+            await self.runner._emit_event_async(
+                self.task_id,
+                EventType.MESSAGE,
+                agent_role="Engineer",
+                payload={
+                    "message": f"Code execution successful for {file_path}",
+                    "visual_type": VisualType.EXECUTION.value,
+                    "file_path": file_path,
+                    "execution_result": execution_result
+                }
+            )
+            return code, execution_result
+        else:
+            # Failure - emit EXECUTION event with error (async)
+            error_msg = "Code execution failed"
+            await self.runner._emit_event_async(
+                self.task_id,
+                EventType.ERROR,
+                agent_role="Engineer",
+                payload={
+                    "message": error_msg,
+                    "visual_type": VisualType.EXECUTION.value,
+                    "file_path": file_path,
+                    "execution_result": "Execution failed - see error details"
+                }
+            )
+            return code, None
+    
+    async def run_debugger(self, error: str, code: str, file_path: str) -> Tuple[str, str]:
+        """
+        Debugger agent: Fixes code errors and re-executes.
+        
+        Args:
+            error: Error message from failed execution
+            code: Original code that failed
+            file_path: Path to the file
+            
+        Returns:
+            Tuple of (fixed_code, execution_result)
+        """
+        # Generate fixed code (simplified - in real scenario, analyze error and fix)
+        fixed_code = """#!/usr/bin/env python3
+\"\"\"Main application module - Fixed version.\"\"\"
+
+def main():
+    print("Hello, World!")
+    print("Application started successfully")
+    return 0
+
+if __name__ == "__main__":
+    exit(main())
+"""
+        
+        # Generate diff
+        diff = self.runner._generate_diff(code, fixed_code)
+        
+        # Emit DIFF event (async)
+        await self.runner._emit_event_async(
+            self.task_id,
+            EventType.MESSAGE,
+            agent_role="Debugger",
+            payload={
+                "message": f"Fixed code for {file_path}",
+                "visual_type": VisualType.DIFF.value,
+                "file_path": file_path,
+                "code_diff": diff,
+                "content": fixed_code
+            }
+        )
+        
+        # Save fixed code as new version (async)
+        await self.runner._save_artifact_async(
+            task_id=self.task_id,
+            agent_role="Debugger",
+            file_path=file_path,
+            content=fixed_code,
+            version_increment=True  # Increment version
+        )
+        
+        # Execute fixed code (async)
+        execution_result = await self.runner._execute_code_safely_async(fixed_code)
+        
+        if execution_result:
+            # Success - emit EXECUTION event (async)
+            await self.runner._emit_event_async(
+                self.task_id,
+                EventType.MESSAGE,
+                agent_role="Debugger",
+                payload={
+                    "message": f"Fixed code executed successfully for {file_path}",
+                    "visual_type": VisualType.EXECUTION.value,
+                    "file_path": file_path,
+                    "execution_result": execution_result
+                }
+            )
+            return fixed_code, execution_result
+        else:
+            # Still failed
+            await self.runner._emit_event_async(
+                self.task_id,
+                EventType.ERROR,
+                agent_role="Debugger",
+                payload={
+                    "message": f"Fixed code still failed for {file_path}",
+                    "visual_type": VisualType.EXECUTION.value,
+                    "file_path": file_path,
+                    "execution_result": "Execution still failed after fix"
+                }
+            )
+            return fixed_code, ""
 
 
 class MetaGPTRunner:
@@ -294,99 +625,111 @@ class MetaGPTRunner:
         roles: List
     ) -> None:
         """
-        Simulate MetaGPT workflow.
+        Simulate MetaGPT workflow using AgentSimulator.
         
-        In production, this would be replaced with actual MetaGPT execution.
-        This method demonstrates how to:
-        - Track agent progress
-        - Emit events
-        - Update task state
+        Orchestrates a sequential multi-agent workflow:
+        1. ProductManager → Creates PRD (plan)
+        2. Architect → Creates system design
+        3. Engineer → Implements code and executes
+        4. Debugger → Fixes errors if needed and re-executes
+        
+        All events are emitted with structured data (visual_type, file_path, code_diff, execution_result)
+        and persisted to both in-memory storage and database.
+        
+        Example flow:
+        ```
+        [ProductManager 🧠] Creating PRD...
+          → Emits MESSAGE event (visual_type=MESSAGE, content=PRD)
+          → Saves artifact: docs/PRD.md
+        
+        [Architect 🧩] Designing system...
+          → Emits CODE event (visual_type=CODE, file_path=docs/design.md)
+          → Saves artifact: docs/design.md
+        
+        [Engineer ⚙️] Implementing code...
+          → Emits CODE event (visual_type=CODE, file_path=src/main.py)
+          → Executes code → Emits EXECUTION event (visual_type=EXECUTION, execution_result=stdout)
+          → Saves artifact: src/main.py (version 1)
+        
+        [Debugger 🔧] (if needed) Fixing errors...
+          → Emits DIFF event (visual_type=DIFF, code_diff=patch)
+          → Executes fixed code → Emits EXECUTION event (visual_type=EXECUTION, execution_result=stdout)
+          → Saves artifact: src/main.py (version 2, incremented)
+        ```
         """
-        agent_sequence = [
-            ("ProductManager", "Creating Product Requirements Document..."),
-            ("Architect", "Designing system architecture..."),
-            ("Engineer", "Writing code implementation...")
-        ]
+        simulator = AgentSimulator(self, task_id)
         
-        total_steps = len(agent_sequence)
+        # Step 1: ProductManager creates PRD
+        self._update_task_state(
+            task_id,
+            current_agent="ProductManager",
+            last_message="Creating Product Requirements Document...",
+            progress=0.25
+        )
         
-        for step, (agent_role, message) in enumerate(agent_sequence, 1):
-            # Update progress
-            progress = step / total_steps
-            
-            # Create AgentRun record in database (optional)
-            agent_run_id = None
-            if self._db_session_factory:
-                try:
-                    agent_run_id = db_utils.create_agent_run(
-                        self._db_session_factory,
-                        task_id,
-                        agent_role,
-                        status="STARTED"
-                    )
-                    if agent_run_id:
-                        with self._lock:
-                            self._agent_run_ids[task_id][agent_role] = agent_run_id
-                except Exception as e:
-                    logger.error(f"Failed to create agent run in database: {e}", exc_info=True)
-            
-            # Emit agent start event
-            self._emit_event(
-                task_id,
-                EventType.AGENT_START,
-                agent_role=agent_role,
-                payload={"message": f"{agent_role} started working"}
-            )
-            
-            # Update agent run status to RUNNING
-            if agent_run_id and self._db_session_factory:
-                try:
-                    db_utils.update_agent_run(
-                        self._db_session_factory,
-                        agent_run_id,
-                        status="RUNNING"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to update agent run status: {e}", exc_info=True)
-            
-            # Update state
+        await asyncio.sleep(0.3)  # Simulate work
+        plan = await simulator.run_pm(requirement)
+        
+        # Step 2: Architect creates design
+        self._update_task_state(
+            task_id,
+            current_agent="Architect",
+            last_message="Designing system architecture...",
+            progress=0.5
+        )
+        
+        await asyncio.sleep(0.3)  # Simulate work
+        design = await simulator.run_architect(plan)
+        
+        # Step 3: Engineer implements code
+        self._update_task_state(
+            task_id,
+            current_agent="Engineer",
+            last_message="Implementing code...",
+            progress=0.75
+        )
+        
+        await asyncio.sleep(0.3)  # Simulate work
+        code, execution_result = await simulator.run_engineer(design)
+        
+        # Step 4: Debugger fixes if needed
+        if execution_result is None:
+            # Code execution failed, need debugger
             self._update_task_state(
                 task_id,
-                current_agent=agent_role,
-                last_message=message,
-                progress=progress
+                current_agent="Debugger",
+                last_message="Fixing code errors...",
+                progress=0.85
             )
             
-            # Emit message event
-            self._emit_event(
+            await asyncio.sleep(0.3)  # Simulate work
+            error_msg = "Code execution failed"
+            fixed_code, final_result = await simulator.run_debugger(error_msg, code, "src/main.py")
+            
+            if final_result:
+                # Debugger succeeded
+                self._update_task_state(
+                    task_id,
+                    current_agent="Debugger",
+                    last_message="Code fixed and executed successfully",
+                    progress=1.0
+                )
+            else:
+                # Debugger also failed
+                self._update_task_state(
+                    task_id,
+                    current_agent="Debugger",
+                    last_message="Code fix attempted but execution still failed",
+                    progress=0.95
+                )
+        else:
+            # Code executed successfully, no debugger needed
+            self._update_task_state(
                 task_id,
-                EventType.MESSAGE,
-                agent_role=agent_role,
-                payload={"message": message}
+                current_agent="Engineer",
+                last_message="Code executed successfully",
+                progress=1.0
             )
-            
-            # Simulate work (faster for tests)
-            await asyncio.sleep(0.2)  # Reduced from 1s to 0.2s for faster test execution
-            
-            # Emit agent complete event
-            self._emit_event(
-                task_id,
-                EventType.AGENT_COMPLETE,
-                agent_role=agent_role,
-                payload={"message": f"{agent_role} completed"}
-            )
-            
-            # Update agent run status to COMPLETED
-            if agent_run_id and self._db_session_factory:
-                try:
-                    db_utils.update_agent_run(
-                        self._db_session_factory,
-                        agent_run_id,
-                        status="COMPLETED",
-                        output_summary=f"{agent_role} completed successfully"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to update agent run completion: {e}", exc_info=True)
     
     def _emit_event(
         self,
@@ -434,6 +777,61 @@ class MetaGPTRunner:
         # Put event into async queue for WebSocket streaming
         self._put_event_to_queue(task_id, event)
     
+    async def _emit_event_async(
+        self,
+        task_id: str,
+        event_type: EventType,
+        agent_role: Optional[str],
+        payload: Dict[str, Any]
+    ) -> None:
+        """
+        Async version of _emit_event for use in async workflows.
+        
+        Emits an event and persists it to database asynchronously.
+        """
+        with self._lock:
+            self._event_counter[task_id] += 1
+            event_id = self._event_counter[task_id]
+        
+        event = Event(
+            event_id=event_id,
+            task_id=task_id,
+            timestamp=datetime.now(timezone.utc),
+            agent_role=agent_role,
+            event_type=event_type,
+            payload=payload
+        )
+        
+        # Store event in memory (for WebSocket streaming and real-time access)
+        with self._lock:
+            self._task_events[task_id].append(event)
+        
+        # Persist event to database asynchronously (if DB session factory is configured)
+        if self._db_session_factory:
+            # Run DB persistence in executor to avoid blocking
+            loop = asyncio.get_event_loop()
+            try:
+                await loop.run_in_executor(
+                    None,
+                    lambda: db_utils.persist_event(self._db_session_factory, event)
+                )
+            except Exception as e:
+                # Log but don't fail - in-memory storage still works
+                logger.error(f"Failed to persist event to database: {e}", exc_info=True)
+        
+        # Notify callbacks
+        with self._lock:
+            callbacks = self._event_callbacks[task_id].copy()
+        
+        for callback in callbacks:
+            try:
+                callback(event)
+            except Exception as e:
+                logger.error(f"Error in event callback for task {task_id}: {e}", exc_info=True)
+        
+        # Put event into async queue for WebSocket streaming (fully async)
+        await self._put_event_to_queue_async(task_id, event)
+    
     def _put_event_to_queue(self, task_id: str, event: Event) -> None:
         """Put event into async queue for WebSocket streaming."""
         # This is called from a thread, so we need to schedule it in the event loop
@@ -467,6 +865,20 @@ class MetaGPTRunner:
                     # WebSocket will send them when it connects
                     logger.debug(f"Could not put event to queue: {e}")
                     pass
+    
+    async def _put_event_to_queue_async(self, task_id: str, event: Event) -> None:
+        """
+        Async version of _put_event_to_queue for use in async workflows.
+        
+        Puts event into async queue for WebSocket streaming.
+        """
+        with self._lock:
+            if task_id in self._event_queues:
+                queue = self._event_queues[task_id]
+                # Direct async put (we're already in async context)
+                await queue.put(event)
+            # If queue doesn't exist, event is already stored in _task_events
+            # WebSocket will send them when it connects
     
     async def subscribe_events(self, task_id: str) -> Queue:
         """
@@ -613,6 +1025,245 @@ class MetaGPTRunner:
             events = [e for e in events if e.event_id > since_event_id]
         
         return events
+    
+    def _execute_code_safely(self, code: str, timeout: int = 10) -> Optional[str]:
+        """
+        Execute Python code safely in a subprocess and capture output.
+        
+        Args:
+            code: Python code to execute
+            timeout: Maximum execution time in seconds
+            
+        Returns:
+            Execution result string (stdout + stderr) if successful, None if failed
+        """
+        try:
+            # Create temporary file for code
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(code)
+                temp_file = f.name
+            
+            try:
+                # Execute code in subprocess
+                result = subprocess.run(
+                    ['python3', temp_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False  # Don't raise on non-zero exit
+                )
+                
+                # Combine stdout and stderr
+                output = ""
+                if result.stdout:
+                    output += f"STDOUT:\n{result.stdout}\n"
+                if result.stderr:
+                    output += f"STDERR:\n{result.stderr}\n"
+                
+                if result.returncode == 0:
+                    return output.strip() if output else "Execution successful (no output)"
+                else:
+                    logger.warning(f"Code execution failed with return code {result.returncode}")
+                    return None
+                    
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(temp_file)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp file {temp_file}: {e}")
+                    
+        except subprocess.TimeoutExpired:
+            logger.error(f"Code execution timed out after {timeout}s")
+            return None
+        except Exception as e:
+            logger.error(f"Error executing code: {e}", exc_info=True)
+            return None
+    
+    async def _execute_code_safely_async(self, code: str, timeout: int = 10) -> Optional[str]:
+        """
+        Execute Python code safely in an async subprocess and capture output.
+        
+        Args:
+            code: Python code to execute
+            timeout: Maximum execution time in seconds
+            
+        Returns:
+            Execution result string (stdout + stderr) if successful, None if failed
+        """
+        temp_file = None
+        try:
+            # Create temporary file for code
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+                f.write(code)
+                temp_file = f.name
+            
+            try:
+                # Execute code in async subprocess
+                process = await asyncio.create_subprocess_exec(
+                    'python3', temp_file,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                
+                try:
+                    # Wait for process with timeout
+                    stdout, stderr = await asyncio.wait_for(
+                        process.communicate(),
+                        timeout=timeout
+                    )
+                except asyncio.TimeoutError:
+                    # Process timed out, kill it
+                    process.kill()
+                    await process.wait()
+                    logger.error(f"Code execution timed out after {timeout}s")
+                    return None
+                
+                # Decode output
+                stdout_text = stdout.decode('utf-8') if stdout else ""
+                stderr_text = stderr.decode('utf-8') if stderr else ""
+                
+                # Combine stdout and stderr
+                output = ""
+                if stdout_text:
+                    output += f"STDOUT:\n{stdout_text}\n"
+                if stderr_text:
+                    output += f"STDERR:\n{stderr_text}\n"
+                
+                if process.returncode == 0:
+                    return output.strip() if output else "Execution successful (no output)"
+                else:
+                    logger.warning(f"Code execution failed with return code {process.returncode}")
+                    return None
+                    
+            finally:
+                # Clean up temporary file
+                if temp_file:
+                    try:
+                        os.unlink(temp_file)
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file {temp_file}: {e}")
+                        
+        except Exception as e:
+            logger.error(f"Error executing code: {e}", exc_info=True)
+            if temp_file:
+                try:
+                    os.unlink(temp_file)
+                except Exception:
+                    pass
+            return None
+    
+    def _generate_diff(self, old_code: str, new_code: str) -> str:
+        """
+        Generate a unified diff between old and new code.
+        
+        Args:
+            old_code: Original code
+            new_code: Modified code
+            
+        Returns:
+            Unified diff string
+        """
+        old_lines = old_code.splitlines(keepends=True)
+        new_lines = new_code.splitlines(keepends=True)
+        
+        diff = difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile='original',
+            tofile='fixed',
+            lineterm=''
+        )
+        
+        return '\n'.join(diff)
+    
+    def _save_artifact_with_task_id(
+        self,
+        task_id: str,
+        agent_role: str,
+        file_path: str,
+        content: str,
+        version_increment: bool = False
+    ) -> Optional[str]:
+        """
+        Save an artifact (code file or document) to ArtifactStore.
+        
+        This is a wrapper around db_utils.save_artifact() that uses the runner's
+        db_session_factory.
+        
+        Args:
+            task_id: Task identifier
+            agent_role: Role of the agent that created this artifact
+            file_path: Path to the file (relative to project root)
+            content: Content of the file
+            version_increment: If True, increment version from latest; if False, use version 1
+            
+        Returns:
+            Artifact ID if successful, None otherwise
+        """
+        if not self._db_session_factory:
+            logger.debug("No DB session factory, skipping artifact save")
+            return None
+        
+        try:
+            artifact_id = db_utils.save_artifact(
+                self._db_session_factory,
+                task_id,
+                agent_role,
+                file_path,
+                content,
+                version_increment
+            )
+            return artifact_id
+        except Exception as e:
+            logger.error(f"Failed to save artifact {file_path} for task {task_id}: {e}", exc_info=True)
+            return None
+    
+    async def _save_artifact_async(
+        self,
+        task_id: str,
+        agent_role: str,
+        file_path: str,
+        content: str,
+        version_increment: bool = False
+    ) -> Optional[str]:
+        """
+        Async version of _save_artifact_with_task_id for use in async workflows.
+        
+        Save an artifact (code file or document) to ArtifactStore asynchronously.
+        
+        Args:
+            task_id: Task identifier
+            agent_role: Role of the agent that created this artifact
+            file_path: Path to the file (relative to project root)
+            content: Content of the file
+            version_increment: If True, increment version from latest; if False, use version 1
+            
+        Returns:
+            Artifact ID if successful, None otherwise
+        """
+        if not self._db_session_factory:
+            logger.debug("No DB session factory, skipping artifact save")
+            return None
+        
+        # Run DB operation in executor to avoid blocking
+        loop = asyncio.get_event_loop()
+        try:
+            artifact_id = await loop.run_in_executor(
+                None,
+                lambda: db_utils.save_artifact(
+                    self._db_session_factory,
+                    task_id,
+                    agent_role,
+                    file_path,
+                    content,
+                    version_increment
+                )
+            )
+            return artifact_id
+        except Exception as e:
+            logger.error(f"Failed to save artifact {file_path} for task {task_id}: {e}", exc_info=True)
+            return None
     
     def stop_task(self, task_id: str) -> bool:
         """

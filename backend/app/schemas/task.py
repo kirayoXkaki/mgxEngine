@@ -104,13 +104,19 @@ class TaskStateResponse(BaseModel):
 
 
 class EventResponse(BaseModel):
-    """Schema for event response."""
+    """Schema for event response with visualization support."""
     event_id: int
     task_id: str
     timestamp: datetime
     agent_role: Optional[str] = None
     event_type: str
     payload: Dict[str, Any]
+    # New fields for visualized multi-agent execution logs
+    parent_id: Optional[str] = Field(None, description="ID of the parent event (for event hierarchy)")
+    file_path: Optional[str] = Field(None, description="File path related to this event")
+    code_diff: Optional[str] = Field(None, description="Code diff content (for DIFF visual type)")
+    execution_result: Optional[str] = Field(None, description="Execution result output (for EXECUTION visual type)")
+    visual_type: Optional[str] = Field(None, description="Visual type: MESSAGE, CODE, DIFF, EXECUTION, DEBUG")
     
     @classmethod
     def from_event(cls, event: Event) -> "EventResponse":
@@ -121,7 +127,35 @@ class EventResponse(BaseModel):
             timestamp=event.timestamp,
             agent_role=event.agent_role,
             event_type=event.event_type.value,
-            payload=event.payload
+            payload=event.payload,
+            parent_id=getattr(event, 'parent_id', None),
+            file_path=getattr(event, 'file_path', None),
+            code_diff=getattr(event, 'code_diff', None),
+            execution_result=getattr(event, 'execution_result', None),
+            visual_type=getattr(event, 'visual_type', None)
+        )
+    
+    @classmethod
+    def from_event_log(cls, event_log) -> "EventResponse":
+        """Create from EventLog ORM model."""
+        import json
+        try:
+            payload = json.loads(event_log.content) if event_log.content else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {"content": event_log.content} if event_log.content else {}
+        
+        return cls(
+            event_id=event_log.id,
+            task_id=event_log.task_id,
+            timestamp=event_log.created_at,
+            agent_role=event_log.agent_role,
+            event_type=event_log.event_type.value,
+            payload=payload,
+            parent_id=event_log.parent_id,
+            file_path=event_log.file_path,
+            code_diff=event_log.code_diff,
+            execution_result=event_log.execution_result,
+            visual_type=event_log.visual_type.value if event_log.visual_type else None
         )
 
 

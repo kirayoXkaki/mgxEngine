@@ -50,6 +50,7 @@ class Task(Base):
     
     # Relationships
     event_logs = relationship("EventLog", back_populates="task", cascade="all, delete-orphan")
+    artifacts = relationship("ArtifactStore", back_populates="task", cascade="all, delete-orphan")
     agent_runs = relationship("AgentRun", back_populates="task", cascade="all, delete-orphan")
     
     def __repr__(self):

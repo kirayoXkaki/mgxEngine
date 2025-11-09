@@ -188,48 +188,15 @@ async def get_task_events(
     # Combine and deduplicate events
     # Use in-memory events if available (more real-time), otherwise use DB events
     if in_memory_events:
-        events = in_memory_events
+        # Convert in-memory events to EventResponse
+        event_responses = [EventResponse.from_event(e) for e in in_memory_events]
     else:
-        # Convert DB events to Event format for response
-        from app.core.metagpt_types import Event, EventType
-        from datetime import datetime
-        import json
-        
-        events = []
-        for db_event in db_events:
-            # Map DB EventType to metagpt_types EventType
-            event_type_map = {
-                "LOG": EventType.LOG,
-                "MESSAGE": EventType.MESSAGE,
-                "ERROR": EventType.ERROR,
-                "RESULT": EventType.RESULT,
-                "AGENT_START": EventType.AGENT_START,
-                "AGENT_COMPLETE": EventType.AGENT_COMPLETE,
-                "SYSTEM": EventType.LOG,  # Fallback
-            }
-            event_type = event_type_map.get(db_event.event_type.value, EventType.LOG)
-            
-            # Parse payload from content
-            payload = {}
-            if db_event.content:
-                try:
-                    payload = json.loads(db_event.content)
-                except:
-                    payload = {"content": db_event.content}
-            
-            event = Event(
-                event_id=db_event.id,
-                task_id=db_event.task_id,
-                timestamp=db_event.created_at,
-                agent_role=db_event.agent_role,
-                event_type=event_type,
-                payload=payload
-            )
-            events.append(event)
+        # Convert DB events directly to EventResponse (includes new visualization fields)
+        event_responses = [EventResponse.from_event_log(db_event) for db_event in db_events]
     
     return EventListResponse(
-        events=[EventResponse.from_event(e) for e in events],
-        total=len(events)
+        events=event_responses,
+        total=len(event_responses)
     )
 
 
